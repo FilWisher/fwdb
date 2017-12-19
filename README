@@ -1,0 +1,4 @@
+fwdb(1) - filwisher's database
+
+`fwdb` is an LSM database written in Rust by someone who doesn't know how to
+write databases and doesn't know how to write Rust.
