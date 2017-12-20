@@ -399,7 +399,7 @@ impl<'a> Database<'a> {
     }
 
     // Fetch `key` from database. Searches `memtable` and `sstables` stack.
-    pub fn get(&mut self, key: &String) -> Result<String, String> {
+    pub fn get(&mut self, key: &String) -> Result<String, Error> {
         match self.memtable.table.get(key) {
             Some(v) => Ok(v.to_string()),
             None => {
@@ -413,7 +413,7 @@ impl<'a> Database<'a> {
                         }
                     }
                 }
-                return Err("Nope".to_string());
+                return Err(Error::new(ErrorKind::NotFound, "nope".to_string()));
             }
         }
     }
@@ -444,5 +444,132 @@ impl<'a> Database<'a> {
             Err(e) => Err(e.description().to_string()),
             _ => Ok(())
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_memtable() {
+        let mut memtable = Memtable::new();
+        for (k, v) in vec![("hi", "wow"), ("nice", "neat")] {
+            memtable.insert(&k.to_string(), &v.to_string());
+        }
+
+        println!("got: hi");
+        println!("vec len: {}", memtable.table.len());
+        for block in &mut memtable.to_blocks() {
+            println!("should print");
+            println!("got: {:?}", block);
+        }
+
+        assert_eq!(Some(&"wow".to_string()), memtable.table.get(&"hi".to_string()), "it should work");
+
+    }
+}
+
+fn run_cmd(cmd: Cmd, db: &mut Database) -> Response {
+    let res = match cmd {
+        Cmd::Set(key, value) => db.set(&key, &value).map(|_| format!("set {}", key)),
+        Cmd::Get(key) => db.get(&key),
+    };
+
+    match res {
+        Ok(msg) => Response::Ok(msg),
+        Err(e) => Response::Err(e.description().to_string())
+    }
+}
+
+fn handle(mut stream: UnixStream, db: &mut Database) {
+    let decoded: Result<Cmd, bincode::Error> = deserialize_from(&mut stream, Infinite);
+    match decoded {
+        Ok(cmd) => {
+            let res = run_cmd(cmd, db);
+            serialize_into(&mut stream, &res, Infinite);
+        }
+        Err(e) => {
+            println!("you prick: {:?}", e);
+            serialize_into(&mut stream, &Response::Err(e.description().to_string()), Infinite);
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum Cmd {
+    Set(String, String),
+    Get(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum Response {
+    Ok(String),
+    Err(String),
+}
+
+fn main() {
+    //let a = vec![
+    //    IndexEntry{key:"hi".to_string(), off:8},
+    //    IndexEntry{key:"wow".to_string(), off:9},
+    //    IndexEntry{key:"z".to_string(), off:100},
+    //];
+    //let key = "hollo".to_string();
+    //let mut e = None;
+    //let mut iter = a.into_iter().take_while(|entry| key > entry.key);
+    //for elm in iter {
+    //    e = Some(elm.off);
+    //    println!("got: {:?}", elm);
+    //}
+    //println!("got: {:?}", e);
+
+    // let mt = &mut Memtable::new();
+    // for (k, v) in vec![("wow", "hi"), ("nice", "neato")] {
+    //     mt.insert(&k.to_string(), &v.to_string());
+    // }
+    // for (k, v) in &mt.table {
+    //     println!("k: {:?}, v: {:?}", k, v); 
+    // }
+    // let blocks = mt.to_blocks();
+    // println!("blocks.len() = {}", blocks.len());
+    // for block in &blocks {
+    //     println!("got: {:?}", block);
+    // }
+
+    // let f = &mut OpenOptions::new()
+    //     .read(true)
+    //     .write(true)
+    //     .create(true)
+    //     .open("tmp.db")
+    //     .unwrap();
+    // write_to_file(blocks, f);
+
+    // let sstable = &mut SSTable::new("tmp.db".to_string());
+    // let t = sstable.get("wow".to_string()).unwrap();
+    // println!("gto: {:?}", t);
+
+    let conf = DatabaseConfig{
+        memtable_size: 200,
+        block_size: 100,
+        socket: None,
+        
+        name: "hello".to_string(),
+        data_dir: "/var/db/".to_string(),
+    };
+    let db = &mut Database::new(&conf);
+
+    let listener = UnixListener::bind("fwdb.hello.sock").unwrap();
+
+    // TODO: while not concurrency-safe, only handle one connection at a time
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                handle(stream, db)
+            }
+            Err(err) => {
+                println!("Error receiving: {:?}", err);
+                break;
+            }
+        } 
     }
 }

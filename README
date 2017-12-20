@@ -2,3 +2,71 @@ fwdb(1) - filwisher's database
 
 `fwdb` is an LSM database written in Rust by someone who doesn't know how to
 write databases and doesn't know how to write Rust.
+
+HIGH LEVEL VIEW
+
+The database consists of:
+  o in-memory memtable
+  o an on-disk append-only log
+  o an set of on-disk sstables (with indexes cached in-memory)
+
+o Database writes
+
+  To insert to the database, a (key,value) pair is passed to the database. The
+  database attempts to store it in the current memtable. When the memtable grows
+  to a certain threshold, it gets serialized to disk as an sstable and a fresh
+  memtable is created.
+
+o Database reads
+
+  To read from database, a key is passed to the database. The database attempts
+  to read it from the current memtable. If it is not available in the memtable,
+  it attempts to read it from each of the sstables on-disk, from newest to
+  oldest.
+
+o Memtable->SSTable serialization
+
+  When the memtable reaches a threshold size, it divides all the (key,value)
+  pairs into a series of fixed-size blocks. The (key,value) pairs are sorted
+  alphabetically by key in each block. Each block is written to the sstable
+  file. Then an index block is appended to the file where each row of the index
+  block consists of an offset to a block and the first key contained in that
+  block. All blocks are recorded in the index block. Finally, the size of the
+  index block is appended to the file as the last unsigned 64-bit integer.
+
+    sstable layout on disk:
+
+      <block 1>
+      <...>
+      <block n>
+      <index block>
+      <size of index block>
+
+o Deserializing IndexBlock from SSTable
+
+  The sstable stays on disk except the index block which can be cached in memory
+  as the sstable is write-only. To load the index block, first we read the last
+  unsigned 64-bit integer from the file. Then we seek back to the beginning of
+  the index block and read it into memory.
+
+o SSTable reads
+
+  Once we have an index block in memory, we binary search through the keys of
+  the index block to find the block likely to contain our key. Then we read just
+  that block from disk. We do a linear search through the block to find our key.
+  If we don't find it, we proceed onto the next oldest sstable on disk.
+
+o Log writes/recovery
+
+  On each write to the memtable, we append the write to a log table. When we
+  serialize the memtable to disk, we empty the log and start again. If the
+  database crashes, we can run through each line of the log table and rerun it
+  against our database to reconstruct the last unpersisted memtable.
+
+                  ____       ____      ___________________
+          cmd -> | DB | <-> | MT | -> | ss_1 | ... | ss_N |
+                  ----       -|--      --|------|-----|---
+     response <---------------`----------`------`-----`
+
+The database has been embedded in a small unix-socket server with a matching cli
+component.
