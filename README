@@ -63,10 +63,10 @@ o Log writes/recovery
   database crashes, we can run through each line of the log table and rerun it
   against our database to reconstruct the last unpersisted memtable.
 
-                  ____       ____      ___________________
-          cmd -> | DB | <-> | MT | -> | ss_1 | ... | ss_N |
-                  ----       -|--      --|------|-----|---
-     response <---------------`----------`------`-----`
+        ┌────┐   ┌────┐  ┌─────┬─────┬─────┐
+      ─>│ DB │<─>│ MT │─>│ SS1 │ ... │ SSN │
+        └────┘   └────┘  └──│──┴──│──┴──│──┘
+      <─────────────────────┴─────┴─────┘
 
 The database has been embedded in a small unix-socket server with a matching cli
 component.
