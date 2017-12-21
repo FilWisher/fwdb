@@ -43,7 +43,7 @@ impl StdError for Error {
 impl From<IOError> for Error {
     fn from(e: IOError) -> Self {
         Error::IOError(e)
-    } 
+    }
 }
 
 impl From<BincodeError> for Error {
@@ -51,7 +51,6 @@ impl From<BincodeError> for Error {
         Error::BincodeError(e)
     }
 }
-
 
 pub type Result<T> = StdResult<T, Error>;
 
@@ -76,7 +75,7 @@ struct Memtable {
  *  for (if it exists).
  */
 
-// A list of index entries. binary search to find IndexEntry in which 
+// A list of index entries. binary search to find IndexEntry in which
 // k is likely to exist
 #[derive(Serialize, Deserialize, Debug)]
 struct IndexBlock {
@@ -93,17 +92,11 @@ impl IndexBlock {
     fn from_file(f: &mut File) -> self::Result<Self> {
         let mut idx_size: i64 = 0;
         let len = serialized_size(&idx_size) as i64;
-        f.seek(SeekFrom::End(-len));
-        idx_size = deserialize_from(f, Infinite).unwrap();
-        f.seek(SeekFrom::End(-(len+idx_size)));
-        let idx: IndexBlock = deserialize_from(f, Infinite).unwrap();
+        f.seek(SeekFrom::End(-len))?;
+        idx_size = deserialize_from(f, Infinite)?;
+        f.seek(SeekFrom::End(-(len+idx_size)))?;
+        let idx: IndexBlock = deserialize_from(f, Infinite)?;
         Ok(idx)
-    }
-
-    #[allow(dead_code)]
-    // binary search for the IndexEntry
-    fn find_block(&self, k: String) -> Option<IndexEntry> {
-        None 
     }
 
     fn insert(&mut self, s: String, off: u64) {
@@ -113,9 +106,9 @@ impl IndexBlock {
         })
     }
 
-    fn get_offset_for(&self, k: String) -> Option<u64> {
+    fn get_offset_for(&self, k: &str) -> Option<u64> {
         // TODO: binary search for the right entry, don't linear search
-        let iter = self.content.iter().take_while(|entry| k >= entry.key );
+        let iter = self.content.iter().take_while(|entry| k >= entry.key.as_ref() );
         let mut elm = None;
         for entry in iter  {
             elm = Some(entry.off);
@@ -138,31 +131,28 @@ impl SSTable {
             idx: None,
             file: None,
             filename: filename.clone(),
-        } 
+        }
     }
-   
+
     // Attempt to read value from on-disk sstable. If file not open,
     // open it. If index-block not loaded into memory, load it.
-    fn get(&mut self, key: String) -> self::Result<String> {
+    fn get(&mut self, key: &str) -> self::Result<String> {
         if self.file.is_none() {
-            let f = try!(File::open(&self.filename));
-            self.file = Some(f);
+            self.file = Some(File::open(&self.filename)?);
         }
         match self.file {
             Some(ref mut f) => {
                 if self.idx.is_none() {
-                    let idx = try!(IndexBlock::from_file(f));
+                    let idx = IndexBlock::from_file(f)?;
                     self.idx = Some(idx);
                 }
                 match &self.idx {
                     &Some(ref b) => {
-                        match b.get_offset_for(key.clone()) {
-                            None => Err(Error::NotFound),
-                            Some(off) => {
-                                Block::from_file(f, off)
-                                    .and_then(|block| block.get(key)
-                                              .ok_or(Error::NotFound))
-                            }
+                        match b.get_offset_for(key) {
+                            None =>
+                                Err(Error::NotFound),
+                            Some(off) =>
+                                Block::from_file(f, off)?.get(key).ok_or(Error::NotFound),
                         }
                     },
                     &None => Err(Error::NotFound),
@@ -196,8 +186,8 @@ impl Block {
     }
 
     fn from_file(f: &mut File, off: u64) -> self::Result<Self> {
-        f.seek(SeekFrom::Start(off));
-        let b: Block = deserialize_from(f, Infinite).unwrap();
+        f.seek(SeekFrom::Start(off))?;
+        let b: Block = deserialize_from(f, Infinite)?;
         Ok(b)
     }
 
@@ -211,8 +201,8 @@ impl Block {
     }
 
     // get value from block
-    fn get(&self, key: String) -> Option<String> {
-        self.content.binary_search_by(|kv| kv.k.cmp(&key))
+    fn get(&self, key: &str) -> Option<String> {
+        self.content.binary_search_by(|kv| kv.k.cmp(&key.to_string()))
             .ok()
             .and_then(|i| self.content.get(i))
             .and_then(|kv| Some(kv.v.clone()))
@@ -225,13 +215,13 @@ impl Memtable {
             table: BTreeMap::new(),
             len: 0,
             block_size: block_size,
-        } 
+        }
     }
 
     fn insert(&mut self, k: &str, v: &str) -> Option<String> {
         // TODO: should actually use serialized_size
         self.len += k.len() + v.len();
-        self.table.insert(k.to_string(), v.to_string())    
+        self.table.insert(k.to_string(), v.to_string())
     }
 
     // Dump memtable to a Vec of Blocks of max BLOCK_SIZE len.
@@ -281,26 +271,26 @@ struct Log {
 }
 
 impl Log {
-    fn new(name: String) -> Self {
-        Log {
+    fn new(name: String) -> Result<Self> {
+        let l = Log {
             file: OpenOptions::new()
                 .read(true)
                 .append(true)
                 .create(true)
-                .open(name.clone())
-                .unwrap(),
-        }
+                .open(name)?,
+        };
+        Ok(l)
     }
 
-    fn record(&mut self, key: &str, value: &str) {
-        let encoded = serialize(&KVPair::new(key, value), Infinite).unwrap();
-        self.file.write_all(&encoded);
-        self.file.sync_data();
+    fn record(&mut self, key: &str, value: &str) -> Result<()> {
+        let encoded = serialize(&KVPair::new(key, value), Infinite)?;
+        self.file.write_all(&encoded)?;
+        Ok(())
     }
 
     // TODO: call this on database initialization
     fn recover_memtable(&mut self, block_size: usize) -> self::Result<Memtable> {
-        self.file.seek(SeekFrom::Start(0));
+        self.file.seek(SeekFrom::Start(0))?;
         let mut memtable = Memtable::new(block_size);
         loop {
             let decoded: BincodeResult<KVPair> = deserialize_from(&mut self.file, Infinite);
@@ -321,8 +311,8 @@ pub struct DatabaseConfig {
     pub memtable_size: usize,
     pub block_size: usize,
 
-    pub name: String, 
-    pub data_dir: String,
+    pub name: &'static str,
+    pub data_dir: &'static str,
 
     /*
      * logfile: <data_dir>/<name>.log
@@ -331,24 +321,25 @@ pub struct DatabaseConfig {
 }
 
 impl<'a> Database<'a> {
-    pub fn new(conf: &'a DatabaseConfig) -> Self {
-        return Database {
+    pub fn new(conf: &'a DatabaseConfig) -> Result<Self> {
+        let db =  Database {
             conf: conf,
-            logfile: Log::new(format!("{}.log", conf.name.clone())),
+            logfile: Log::new(format!("{}.log", conf.name))?,
             memtable: Memtable::new(conf.block_size),
             sstables: Vec::new(),
-        }
+        };
+        Ok(db)
     }
 
     // Set `key` to `value`
     pub fn set(&mut self, key: &str, value: &str) -> self::Result<()> {
-        self.logfile.record(key, value);
+        self.logfile.record(key, value)?;
         if self.memtable.len + KVPair::new(key, value).len() > self.conf.memtable_size {
             let filename = format!("{}.db", self.conf.name);
-            let file = &mut try!(File::create(&filename));
-            self.serialize_memtable(file);
-            let s = SSTable::new(filename.clone());
-            self.sstables.push(s);
+            File::create(&filename)
+                .map_err(|e| Error::from(e))
+                .and_then(|ref mut f| self.serialize_memtable(f))?;
+            self.sstables.push(SSTable::new(filename));
             self.memtable = Memtable::new(self.conf.block_size);
         }
         self.memtable.insert(key, value);
@@ -356,12 +347,12 @@ impl<'a> Database<'a> {
     }
 
     // Fetch `key` from database. Searches `memtable` and `sstables` stack.
-    pub fn get(&mut self, key: &String) -> self::Result<String> {
+    pub fn get(&mut self, key: &str) -> self::Result<String> {
         match self.memtable.table.get(key) {
             Some(v) => Ok(v.to_string()),
             None => {
                 for sstable in &mut self.sstables {
-                    match sstable.get(key.clone()) {
+                    match sstable.get(key) {
                         Err(_) => {
                             continue;
                         }
@@ -375,12 +366,14 @@ impl<'a> Database<'a> {
         }
     }
 
-    // TODO: attempt to recover memtable from logfile
     // TODO: attempt to recover sstables from <data_dir>/<name><n>.db
-    fn recover(&mut self) {}
+    fn recover(&mut self) -> Result<()> {
+        self.memtable = self.logfile.recover_memtable(self.conf.block_size)?;
+        Ok(())
+    }
 
     // Serialize memtable to on-disk sstable.
-    fn serialize_memtable(&mut self, file: &mut File) {
+    fn serialize_memtable(&mut self, file: &mut File) -> Result<()> {
         let blocks = self.memtable.to_blocks();
         let mut idx = IndexBlock::new();
         let mut off = 0;
@@ -388,19 +381,14 @@ impl<'a> Database<'a> {
             match block.first_key() {
                 Some(k) => {
                     idx.insert(k, off);
-                    let size = serialized_size(block);
-                    off = off + size;
-                    serialize_into(file, &block, Infinite);
+                    off = off + serialized_size(block);
+                    serialize_into(file, &block, Infinite)?;
                 }
                 None => continue
             }
         }
-        let idx_size = serialized_size(&idx);
-        serialize_into(file, &idx, Infinite);
-        match serialize_into(file, &idx_size, Infinite) {
-            Err(e) => Err(e.description().to_string()),
-            _ => Ok(())
-        };
+        serialize_into(file, &idx, Infinite)?;
+        serialize_into(file, &serialized_size(&idx), Infinite).map_err(|e| Error::from(e))
     }
 }
 

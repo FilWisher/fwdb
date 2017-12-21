@@ -1,10 +1,7 @@
 TODO: 
 o load stack of sstables on process initialization
 o track size of memtable using `serialized_size`
-o refactor `unwrap` and unsafe calls. 
-o refactor to chain with `map` and `and_then`.
 o load config from file
-o refactor all error-related code
-o refactor to unify string code (String or &str?)
 o auto drop an sstable if it's badly formatted
 o handle any value that is Serialize, Deserialize, (and possible Copy/Clone?)
+o serialize to multiple sstables, no just the same each time

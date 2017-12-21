@@ -15,14 +15,12 @@
  */
 
 extern crate bincode;
-
-use bincode::Result as BincodeResult;
-use bincode::{serialize_into, deserialize_from, Infinite};
+extern crate fwdb;
 
 use std::os::unix::net::{UnixStream, UnixListener};
 use std::error::Error;
 
-extern crate fwdb;
+use bincode::{serialize_into, deserialize_from, Infinite};
 
 use fwdb::*;
 
@@ -38,30 +36,32 @@ fn run_cmd(cmd: database::Cmd, db: &mut database::Database) -> database::Respons
     }
 }
 
-fn handle(mut stream: UnixStream, db: &mut database::Database) {
-    let decoded: BincodeResult<database::Cmd> = deserialize_from(&mut stream, Infinite);
+fn handle(mut stream: UnixStream, db: &mut database::Database) -> database::Result<()> {
+    let decoded: database::Result<database::Cmd> = deserialize_from(&mut stream, Infinite)
+        .map_err(|e| database::Error::from(e));
     match decoded {
         Ok(cmd) => {
             let res = run_cmd(cmd, db);
-            serialize_into(&mut stream, &res, Infinite);
+            serialize_into(&mut stream, &res, Infinite).map_err(|e| database::Error::from(e))
         }
         Err(e) => {
-            println!("you prick: {:?}", e);
-            serialize_into(&mut stream, &database::Response::Err(e.description().to_string()), Infinite);
+            serialize_into(&mut stream, &database::Response::Err(e.description().to_string()), Infinite)?;
+            Err(e)
         }
     }
 }
 
 fn main() {
 
+    // TODO: parse this config from a conf file
     let conf = database::DatabaseConfig{
         memtable_size: 200,
         block_size: 100,
         
-        name: "hello".to_string(),
-        data_dir: "/var/db/".to_string(),
+        name: "hello",
+        data_dir: "/var/db/",
     };
-    let db = &mut database::Database::new(&conf);
+    let db = &mut database::Database::new(&conf).unwrap();
 
     let listener = UnixListener::bind("fwdb.hello.sock").unwrap();
 
@@ -69,7 +69,10 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                handle(stream, db)
+                match handle(stream, db) {
+                    Ok(_) => println!("ok"),
+                    Err(e) => println!("you prick: {:?}", e),
+                }
             }
             Err(err) => {
                 println!("Error receiving: {:?}", err);
